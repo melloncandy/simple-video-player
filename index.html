@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple Video Player</title>
+  <style>
+    /* Very simple centered layout */
+    :root{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,'Helvetica Neue',Arial}
+    body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#111;color:#eee}
+    .card{max-width:920px;width:95%;padding:18px;border-radius:12px;background:linear-gradient(180deg,#0f1720, #081018);box-shadow:0 8px 30px rgba(2,6,23,.6);text-align:center}
+    h1{font-size:20px;margin:0 0 12px}
+    video{width:100%;height:auto;border-radius:8px;background:#000;outline:1px solid rgba(255,255,255,.03)}
+    .actions{display:flex;gap:10px;align-items:center;justify-content:center;margin-top:12px}
+    .btn{padding:8px 12px;border-radius:8px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.04);color:inherit;text-decoration:none;cursor:pointer}
+    .hint{font-size:13px;color:#9aa6b2;margin-top:8px}
+    #unmuteBtn{display:none}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <h1>Simple Video Player</h1>
+
+    <!--
+      Place the video file next to this HTML file and name it exactly: video.mp4
+      If you want a different filename, change the `src` and the download link below.
+    -->
+
+    <video id="player" playsinline preload="auto" controls autoplay>
+      <source src="video.mp4" type="video/mp4">
+      Your browser does not support the video tag.
+    </video>
+
+    <div class="actions">
+      <a id="downloadBtn" class="btn" href="video.mp4" download>Download Video</a>
+      <button id="unmuteBtn" class="btn">Enable Sound</button>
+    </div>
+
+    <div class="hint">Autoplay is set — browsers may block autoplay with sound. If sound is blocked, click <strong>Enable Sound</strong>.</div>
+  </main>
+
+  <script>
+    const player = document.getElementById('player');
+    const unmuteBtn = document.getElementById('unmuteBtn');
+
+    // Try to autoplay with sound. Many browsers block autoplay with audio.
+    // If playback fails, mute and autoplay; then show an "Enable Sound" button so the visitor can unmute.
+    (async function tryAutoplay(){
+      try{
+        // Attempt to play (may be blocked)
+        await player.play();
+        // If it plays and is not muted, all good.
+        if(player.muted) player.muted = false;
+      }catch(err){
+        // Autoplay with sound blocked. Mute and try again so video starts immediately.
+        player.muted = true;
+        try{ await player.play(); }catch(e){ /* if even muted autoplay blocked, nothing else we can do */ }
+        // Show the unmute button so the user can enable sound with a click (user gesture).
+        unmuteBtn.style.display = 'inline-block';
+      }
+    })();
+
+    // When user clicks enable sound, unmute and play.
+    unmuteBtn.addEventListener('click', async ()=>{
+      player.muted = false;
+      try{ await player.play(); }catch(e){ /* ignore */ }
+      unmuteBtn.style.display = 'none';
+    });
+
+    // Optional: if the user interacts with the page in a way that counts as a gesture,
+    // try to unmute automatically and hide the button.
+    function handleGesture(){
+      if(!player) return;
+      if(player.paused) player.play().catch(()=>{});
+      player.muted = false;
+      unmuteBtn.style.display = 'none';
+      window.removeEventListener('click', handleGesture);
+    }
+    window.addEventListener('click', handleGesture);
+  </script>
+</body>
+</html>
