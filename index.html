@@ -18,7 +18,7 @@
 
     /* video area */
     .media-wrap{margin-top:12px;position:relative}
-    .video-frame, video{width:100%;height:100%;max-height:620px;border-radius:8px;background:#000;display:block}
+    .video-frame, video{width:100%;aspect-ratio:16/9;max-height:620px;border-radius:8px;background:#000;display:block}
     .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:10px;margin-top:10px;border-radius:8px;background:linear-gradient(180deg,rgba(255,255,255,.02),rgba(255,255,255,.01))}
 
     /* left controls */
@@ -61,15 +61,11 @@
       </header>
 
       <div class="media-wrap" id="mediaWrap" data-youtube="29Jn9il7QtQ">
-        <!-- If you want to use YouTube, set data-youtube on the mediaWrap element.
-             Example: <div class="media-wrap" data-youtube="29Jn9il7QtQ"> -->
-
-        <!-- Local video element (default). If data-youtube exists we'll swap to iframe. -->
+        <!-- If data-youtube is set we use YouTube iframe + API. Otherwise a local <video> element is used. -->
         <video id="player" class="player" playsinline preload="auto" controls crossorigin>
           <source src="video.mp4" type="video/mp4">
           Your browser doesn't support HTML5 video.
         </video>
-
       </div>
 
       <div class="controls" role="group" aria-label="Player controls">
@@ -111,11 +107,16 @@
   </div>
 
   <script>
-    /* Configuration: if you want to use YouTube embed, set data-youtube on mediaWrap
-       e.g. <div class="media-wrap" data-youtube="29Jn9il7QtQ"> and remove local video.mp4 or keep for download. */
+    /* Enhanced player: supports both local video and YouTube embed with API so controls work.
+       Key fixes from previous version:
+       - iframe uses YouTube IFrame API so buttons (play/pause/seek/volume/speed) control the YouTube player.
+       - iframe now fills area using aspect-ratio and responsive styles.
+       - Progress bar is updated by polling YouTube player state when using iframe.
+    */
+
     const mediaWrap = document.getElementById('mediaWrap');
     const youtubeId = mediaWrap.dataset.youtube || '';
-    const playerEl = document.getElementById('player');
+    const origVideoEl = document.getElementById('player');
     const playPauseBtn = document.getElementById('playPause');
     const rewBtn = document.getElementById('rew');
     const fwdBtn = document.getElementById('fwd');
@@ -129,106 +130,118 @@
     const fsBtn = document.getElementById('fs');
     const downloadBtn = document.getElementById('downloadBtn');
 
-    let player = playerEl; // will reference either <video> or iframe window
+    let player = origVideoEl; // either HTMLVideoElement or YT.Player instance
     let isYouTube = false;
+    let ytPolling = null;
 
-    // If a YouTube ID is provided, swap in an iframe
+    function formatTime(s){ if(!isFinite(s)) return '0:00'; const m = Math.floor(s/60); const sec = Math.floor(s%60); return m + ':' + String(sec).padStart(2,'0'); }
+
     if(youtubeId){
+      // replace local video with iframe and load YT API
       isYouTube = true;
-      const iframe = document.createElement('iframe');
-      iframe.className = 'video-frame';
-      iframe.width = '100%';
-      iframe.height = '480';
-      iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
-      iframe.allowFullscreen = true;
-      iframe.src = `https://www.youtube.com/embed/${youtubeId}?autoplay=1&mute=1&rel=0&playsinline=1`;
-      // replace video element with iframe
-      playerEl.replaceWith(iframe);
-      player = iframe;
-      // When using YouTube iframe, downloading isn't possible directly
       downloadBtn.style.display = 'none';
-      document.getElementById('meta').textContent = 'Playing via YouTube embed — download disabled';
+      document.getElementById('meta').textContent = 'Playing via YouTube embed — some controls limited';
+
+      // create container for iframe
+      const iframe = document.createElement('div');
+      iframe.id = 'yt-player';
+      iframe.style.width = '100%';
+      iframe.style.aspectRatio = '16/9';
+      iframe.style.maxHeight = '620px';
+      iframe.style.borderRadius = '8px';
+      mediaWrap.innerHTML = '';
+      mediaWrap.appendChild(iframe);
+
+      // load YouTube IFrame API
+      if(!window.YT){
+        const tag = document.createElement('script');
+        tag.src = 'https://www.youtube.com/iframe_api';
+        document.head.appendChild(tag);
+      }
+
+      // called by YouTube API when ready
+      window.onYouTubeIframeAPIReady = function(){
+        const ytPlayer = new YT.Player('yt-player', {
+          height: '480',
+          width: '100%',
+          videoId: youtubeId,
+          playerVars: { 'autoplay': 1, 'playsinline': 1, 'rel': 0, 'enablejsapi': 1 },
+          events: {
+            onReady: function(e){ player = ytPlayer; // set reference to YT player
+              try{ ytPlayer.playVideo(); }catch(e){}
+              initYouTubeControls(ytPlayer);
+            },
+            onStateChange: function(e){ updatePlayState(); }
+          }
+        });
+      };
+
+      // initialize controls that work with YT player
+      function initYouTubeControls(ytPlayer){
+        // volume slider values are 0..100 for YT
+        vol.value = 1; // UI shows 0..1, but we'll map
+        updateProgressPoll();
+
+        playPauseBtn.addEventListener('click', ()=>{ const state = ytPlayer.getPlayerState(); if(state === YT.PlayerState.PLAYING) ytPlayer.pauseVideo(); else ytPlayer.playVideo(); });
+        rewBtn.addEventListener('click', ()=>{ const t = ytPlayer.getCurrentTime(); ytPlayer.seekTo(Math.max(0,t-10), true); });
+        fwdBtn.addEventListener('click', ()=>{ const t = ytPlayer.getCurrentTime(); ytPlayer.seekTo(t+10, true); });
+        speed.addEventListener('change', ()=>{ ytPlayer.setPlaybackRate(parseFloat(speed.value)); });
+        muteBtn.addEventListener('click', ()=>{ if(ytPlayer.isMuted()) ytPlayer.unMute(); else ytPlayer.mute(); updateMuteUI(); });
+        vol.addEventListener('input', ()=>{ const v = Math.round(vol.value * 100); ytPlayer.setVolume(v); if(v===0) ytPlayer.mute(); else ytPlayer.unMute(); updateMuteUI(); });
+
+        pipBtn.addEventListener('click', ()=>{ alert('Picture-in-Picture is not supported for YouTube embeds in all browsers. Use fullscreen instead.'); });
+        fsBtn.addEventListener('click', ()=>{ mediaWrap.requestFullscreen?.(); });
+
+        progress.addEventListener('click', (e)=>{ const rect = progress.getBoundingClientRect(); const x = e.clientX - rect.left; const pct = x / rect.width; const dur = ytPlayer.getDuration(); ytPlayer.seekTo(pct * dur, true); });
+
+        // keyboard shortcuts
+        window.addEventListener('keydown', (e)=>{ if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return; if(e.code === 'Space'){ e.preventDefault(); const state = ytPlayer.getPlayerState(); if(state === YT.PlayerState.PLAYING) ytPlayer.pauseVideo(); else ytPlayer.playVideo(); } if(e.key === 'ArrowLeft'){ const t = ytPlayer.getCurrentTime(); ytPlayer.seekTo(Math.max(0,t-5), true); } if(e.key === 'ArrowRight'){ const t = ytPlayer.getCurrentTime(); ytPlayer.seekTo(t+5, true); } if(e.key.toLowerCase() === 'f'){ mediaWrap.requestFullscreen?.(); } if(e.key.toLowerCase() === 'm'){ if(ytPlayer.isMuted()) ytPlayer.unMute(); else ytPlayer.mute(); updateMuteUI(); } });
+
+        function updateProgressPoll(){ if(ytPolling) clearInterval(ytPolling); ytPolling = setInterval(()=>{ try{ const cur = ytPlayer.getCurrentTime(); const dur = ytPlayer.getDuration() || 0; const pct = dur ? (cur/dur)*100 : 0; progressBar.style.width = pct + '%'; timeEl.textContent = formatTime(cur) + ' / ' + formatTime(dur); updatePlayState(); }catch(e){} }, 500); }
+
+        function updatePlayState(){ const state = ytPlayer.getPlayerState(); playPauseBtn.textContent = (state === YT.PlayerState.PLAYING) ? 'Pause' : 'Play'; updateMuteUI(); }
+        function updateMuteUI(){ muteBtn.textContent = ytPlayer.isMuted() ? '🔈' : '🔊'; const v = ytPlayer.getVolume(); vol.value = (v/100).toString(); }
+      }
+
     } else {
-      // Local video controls
-      setupVideoControls();
+      // Local video element controls
+      setupVideoControls(origVideoEl);
     }
 
-    function setupVideoControls(){
-      // Try autoplay; if blocked, mute and play
-      (async function tryAutoplay(){
-        try{ await player.play(); }catch(e){ player.muted = true; try{ await player.play(); }catch(e){} document.getElementById('meta').textContent = 'Autoplay muted: click to enable sound'; }
-      })();
+    // Generic setup for local HTMLVideoElement
+    function setupVideoControls(v){
+      player = v;
+      // autoplay attempt
+      (async function tryAutoplay(){ try{ await player.play(); }catch(e){ player.muted = true; try{ await player.play(); }catch(e){} document.getElementById('meta').textContent = 'Autoplay muted: click to enable sound'; } })();
 
-      playPauseBtn.addEventListener('click', ()=>{
-        if(player.paused) player.play(); else player.pause();
-      });
+      playPauseBtn.addEventListener('click', ()=>{ if(player.paused) player.play(); else player.pause(); });
+      rewBtn.addEventListener('click', ()=>{ player.currentTime = Math.max(0, player.currentTime - 10); });
+      fwdBtn.addEventListener('click', ()=>{ player.currentTime = Math.min(player.duration || 0, player.currentTime + 10); });
 
       player.addEventListener('play', ()=>{ playPauseBtn.textContent = 'Pause'; });
       player.addEventListener('pause', ()=>{ playPauseBtn.textContent = 'Play'; });
 
-      rewBtn.addEventListener('click', ()=>{ player.currentTime = Math.max(0, player.currentTime - 10); });
-      fwdBtn.addEventListener('click', ()=>{ player.currentTime = Math.min(player.duration || 0, player.currentTime + 10); });
+      player.addEventListener('timeupdate', ()=>{ const pct = (player.currentTime / (player.duration || 1)) * 100; progressBar.style.width = pct + '%'; timeEl.textContent = formatTime(player.currentTime) + ' / ' + formatTime(player.duration || 0); });
 
-      // Progress
-      player.addEventListener('timeupdate', updateProgress);
-      function updateProgress(){
-        const pct = (player.currentTime / (player.duration || 1)) * 100;
-        progressBar.style.width = pct + '%';
-        timeEl.textContent = formatTime(player.currentTime) + ' / ' + formatTime(player.duration || 0);
-      }
+      progress.addEventListener('click', (e)=>{ const rect = progress.getBoundingClientRect(); const x = e.clientX - rect.left; const pct = x / rect.width; player.currentTime = pct * (player.duration || 0); });
 
-      // Seek by clicking progress bar
-      progress.addEventListener('click', (e)=>{
-        const rect = progress.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const pct = x / rect.width;
-        player.currentTime = pct * (player.duration || 0);
-      });
-
-      // Volume
       vol.addEventListener('input', ()=>{ player.volume = vol.value; player.muted = player.volume === 0; updateMuteUI(); });
       muteBtn.addEventListener('click', ()=>{ player.muted = !player.muted; updateMuteUI(); });
       function updateMuteUI(){ muteBtn.textContent = player.muted ? '🔈' : '🔊'; vol.value = player.muted ? 0 : player.volume; }
 
-      // Speed
       speed.addEventListener('change', ()=>{ player.playbackRate = parseFloat(speed.value); });
 
-      // Picture in Picture
-      pipBtn.addEventListener('click', async ()=>{
-        if(document.pictureInPictureElement){ await document.exitPictureInPicture(); return; }
-        try{ await player.requestPictureInPicture(); }catch(e){ alert('Picture-in-Picture not supported on this browser or for this video.'); }
-      });
+      pipBtn.addEventListener('click', async ()=>{ try{ if(document.pictureInPictureElement) await document.exitPictureInPicture(); else await player.requestPictureInPicture(); }catch(e){ alert('Picture-in-Picture not supported for this video.'); } });
 
-      // Fullscreen
       fsBtn.addEventListener('click', ()=>{ if(!document.fullscreenElement) player.requestFullscreen?.(); else document.exitFullscreen(); });
 
-      // Keyboard shortcuts
-      window.addEventListener('keydown', (e)=>{
-        if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-        if(e.code === 'Space'){ e.preventDefault(); if(player.paused) player.play(); else player.pause(); }
-        if(e.key === 'ArrowLeft'){ player.currentTime = Math.max(0, player.currentTime - 5); }
-        if(e.key === 'ArrowRight'){ player.currentTime = Math.min(player.duration || 0, player.currentTime + 5); }
-        if(e.key.toLowerCase() === 'f'){ if(!document.fullscreenElement) player.requestFullscreen?.(); else document.exitFullscreen(); }
-        if(e.key.toLowerCase() === 'm'){ player.muted = !player.muted; updateMuteUI(); }
-      });
+      // keyboard shortcuts
+      window.addEventListener('keydown', (e)=>{ if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return; if(e.code === 'Space'){ e.preventDefault(); if(player.paused) player.play(); else player.pause(); } if(e.key === 'ArrowLeft'){ player.currentTime = Math.max(0, player.currentTime - 5); } if(e.key === 'ArrowRight'){ player.currentTime = Math.min(player.duration || 0, player.currentTime + 5); } if(e.key.toLowerCase() === 'f'){ if(!document.fullscreenElement) player.requestFullscreen?.(); else document.exitFullscreen(); } if(e.key.toLowerCase() === 'm'){ player.muted = !player.muted; updateMuteUI(); } });
 
-      // Format time helper
-      function formatTime(s){ if(!isFinite(s)) return '0:00'; const m = Math.floor(s/60); const sec = Math.floor(s%60); return m + ':' + String(sec).padStart(2,'0'); }
-
-      // Initialize UI
-      player.addEventListener('loadedmetadata', updateProgress);
-      updateMuteUI();
+      // click on video toggles play/pause
+      mediaWrap.addEventListener('click', (e)=>{ if(e.target.closest('video')){ if(player.paused) player.play(); else player.pause(); } });
     }
 
-    // If iframe YouTube we can't control native video events similarly; simple play/pause label change not supported.
-
-    // Small UX: clicking on media toggles play/pause for local video
-    document.addEventListener('click', (e)=>{
-      if(e.target.closest('.player') && !isYouTube){ if(player.paused) player.play(); else player.pause(); }
-    });
-
-    // Allow changing description text from script easily
-    // document.getElementById('descText').textContent = 'Your custom description here.';
   </script>
 </body>
 </html>
